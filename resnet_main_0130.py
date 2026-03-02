@@ -3,7 +3,7 @@ resnet_main_0130.py
 -----------------------------------------------------------------------------
 用途
 - 训练 1D-ResNet 回归模型：输入为单条 1D 序列 x（光谱/PSD），输出为两参数 y=[Delta_alpha, beta]。
-- 数据来自 mat_to_npz_group_split.py 生成的 train.npz / test.npz（键：x, y；可额外带 lambda_nm 但训练不依赖它）。
+- 数据来自 mat_to_npz_group_split.py 生成的 train.npz / val.npz（键：x, y；可额外带 lambda_nm 但训练不依赖它）。
 
 输入数据（NPZ）
 - x: [N, L] 或 [N, 1, L]，脚本内统一为 torch.float32 的 [N, 1, L]
@@ -32,18 +32,18 @@ resnet_main_0130.py
 - standardize_y_train_stats(y_train_raw[N,2]) -> (y_mean[1,2], y_std[1,2])
 - evaluate(model, loader, ..., y_mean, y_std) -> (loss_norm, mse, mae, rmse, mse_a, mse_b, mae_a, mae_b)
 - dump_y_and_pred_csv(...) -> 保存 “真实尺度” y_true/y_pred/diff 到 CSV
-- train(...) -> 完整训练流程（每 epoch eval，按 test_mse_real 选 best）
+- train(...) -> 完整训练流程（每 epoch eval，按 val_mse_real 选 best）
 - main() -> 配置路径与超参，调用 train()
 
 输出（写入 save_dir）
 - best.pt : 保存最佳模型与关键统计量
   - 包含：epoch, model_state, optimizer_state, best_mse_real, length, norm_x, y_mean, y_std
-- best_epoch_XXX_y_true_y_pred.csv : 对 test 集导出真实尺度预测
+- best_epoch_XXX_y_true_y_pred.csv : 对 val 集导出真实尺度预测
   - 列：Delta_alpha_true/Beta_true/Delta_alpha_pred/Beta_pred/差值与 L1 等
 - loss_curve*.png, loss_history.csv : 训练/测试曲线与每 epoch 记录
 
 下游衔接
-- resnet_test_main_0209.py 会加载 best.pt 并在任意 npz 上推理/导出 CSV，并可对齐传统反解结果。
+- resnet_val_main_0209.py 会加载 best.pt 并在任意 npz 上推理/导出 CSV，并可对齐传统反解结果。
 -----------------------------------------------------------------------------
 """
 import os
@@ -134,16 +134,16 @@ def standardize_y_train_stats(y_train_raw: torch.Tensor, eps: float = 1e-12):
     return mean, std
 
 
-def plot_losses(train_losses, test_losses, save_path=None):
+def plot_losses(train_losses, val_losses, save_path=None):
     """画总 MSE（真实尺度）随 epoch 的曲线"""
     epochs = np.arange(1, len(train_losses) + 1)
 
     plt.figure()
     plt.plot(epochs, train_losses, label="train mse (orig)")
-    plt.plot(epochs, test_losses, label="test mse (orig)")
+    plt.plot(epochs, val_losses, label="val mse (orig)")
     plt.xlabel("epoch")
     plt.ylabel("mse")
-    plt.title("Train/Test MSE (Original Scale)")
+    plt.title("Train/val MSE (Original Scale)")
     plt.grid(True)
     plt.legend()
 
@@ -277,11 +277,11 @@ def dump_y_and_pred_csv(model: nn.Module,
 
 def train(
     train_npz: str,
-    test_npz: str,
+    val_npz: str,
     length: int = 45,
     epochs: int = 50,
     batch_size: int = 128,
-    test_batch_size: int = 512,
+    val_batch_size: int = 512,
     lr: float = 1e-3,
     weight_decay: float = 1e-2,
     grad_clip: float = 1.0,
@@ -294,17 +294,17 @@ def train(
 
     # ---------- data ----------
     x_train, y_train_raw = load_npz_dataset(train_npz, length=length)
-    x_test,  y_test_raw  = load_npz_dataset(test_npz,  length=length)
+    x_val,  y_val_raw  = load_npz_dataset(val_npz,  length=length)
 
     # 只归一化输入 x：每个样本沿 T -> 0~1（你原逻辑不改）
     if norm_x:
         x_train = minmax_per_sample_T(x_train)
-        x_test  = minmax_per_sample_T(x_test)
+        x_val  = minmax_per_sample_T(x_val)
 
     # y：训练用 z-score（仅用 train 统计量），但日志/曲线/评估一律用真实尺度
     y_mean, y_std = standardize_y_train_stats(y_train_raw, eps=1e-12)  # [1,2]
     y_train = (y_train_raw - y_mean) / y_std
-    y_test  = (y_test_raw  - y_mean) / y_std
+    y_val  = (y_val_raw  - y_mean) / y_std
 
     # DataLoader：把 y_norm 和 y_raw 都带上，便于训练/评估分别使用
     train_loader = DataLoader(
@@ -315,9 +315,9 @@ def train(
         pin_memory=(device.type == "cuda"),
         drop_last=False,
     )
-    test_loader = DataLoader(
-        TensorDataset(x_test, y_test, y_test_raw),
-        batch_size=test_batch_size,
+    val_loader = DataLoader(
+        TensorDataset(x_val, y_val, y_val_raw),
+        batch_size=val_batch_size,
         shuffle=False,
         num_workers=0,
         pin_memory=(device.type == "cuda"),
@@ -345,13 +345,13 @@ def train(
 
     # 你原来的总曲线：真实尺度 MSE（总）
     train_losses = []
-    test_losses = []
+    val_losses = []
 
     # 你要求的优化点 2：α/β 损失分别存储（真实尺度）
     train_losses_a = []
     train_losses_b = []
-    test_losses_a = []
-    test_losses_b = []
+    val_losses_a = []
+    val_losses_b = []
 
     # 同步保存每轮学习率，方便你回看 scheduler 是否生效
     lr_history = []
@@ -418,9 +418,9 @@ def train(
             train_mse_real = se_sum_epoch / max(denom_epoch, 1)
             pbar.set_postfix(train_mse_real=f"{train_mse_real:.6g}")
 
-        # ---------- test each epoch ----------
+        # ---------- val each epoch ----------
         _, mse, mae, rmse, mse_a, mse_b, mae_a, mae_b = evaluate(
-            model, test_loader, device, criterion, y_mean=y_mean, y_std=y_std
+            model, val_loader, device, criterion, y_mean=y_mean, y_std=y_std
         )
 
         # 训练集真实尺度 mse（总/α/β）
@@ -430,12 +430,12 @@ def train(
 
         # 记录曲线：全部真实尺度
         train_losses.append(train_mse_real)
-        test_losses.append(mse)
+        val_losses.append(mse)
 
         train_losses_a.append(train_mse_a)
         train_losses_b.append(train_mse_b)
-        test_losses_a.append(mse_a)
-        test_losses_b.append(mse_b)
+        val_losses_a.append(mse_a)
+        val_losses_b.append(mse_b)
 
         # 记录 lr（scheduler.step 之前的当前 lr）
         cur_lr = optimizer.param_groups[0]["lr"]
@@ -443,9 +443,9 @@ def train(
 
         msg = (
             f"[E{epoch}] "
-            f"train_mse={train_mse_real:.6g} | test_mse={mse:.6g} test_rmse={rmse:.6g} | "
-            f"a_mse(train/test)={train_mse_a:.6g}/{mse_a:.6g} | "
-            f"b_mse(train/test)={train_mse_b:.6g}/{mse_b:.6g} | "
+            f"train_mse={train_mse_real:.6g} | val_mse={mse:.6g} val_rmse={rmse:.6g} | "
+            f"a_mse(train/val)={train_mse_a:.6g}/{mse_a:.6g} | "
+            f"b_mse(train/val)={train_mse_b:.6g}/{mse_b:.6g} | "
             f"a_mae={mae_a:.6g} b_mae={mae_b:.6g} | lr={cur_lr:.3e}"
         )
         if norm_x:
@@ -453,7 +453,7 @@ def train(
         print(msg)
 
         # ---------- save best ----------
-        # 你原逻辑：按真实尺度 test_mse 选 best（不改，只在 best 时额外导出 CSV）
+        # 你原逻辑：按真实尺度 val_mse 选 best（不改，只在 best 时额外导出 CSV）
         if mse < best_mse:
             best_mse = mse
             ckpt_path = os.path.join(save_dir, "best.pt")
@@ -474,7 +474,7 @@ def train(
 
             # 你要求的优化点 3：保存 best.pt 的同时导出 y_true/y_pred CSV（真实尺度）
             csv_path = os.path.join(save_dir, f"best_epoch_{epoch:03d}_y_true_y_pred.csv")
-            dump_y_and_pred_csv(model, test_loader, device, y_mean=y_mean, y_std=y_std, save_csv_path=csv_path)
+            dump_y_and_pred_csv(model, val_loader, device, y_mean=y_mean, y_std=y_std, save_csv_path=csv_path)
             print(f"  -> saved csv to {csv_path}")
 
         # ---------- scheduler step ----------
@@ -482,9 +482,9 @@ def train(
         scheduler.step()
 
     # 画总 loss 曲线（真实尺度）
-    plot_losses(train_losses, test_losses, save_path=os.path.join(save_dir, "loss_curve.png"))
-    plot_losses(train_losses_a, test_losses_a, save_path=os.path.join(save_dir, "loss_curve_a.png"))
-    plot_losses(train_losses_b, test_losses_b, save_path=os.path.join(save_dir, "loss_curve_b.png"))
+    plot_losses(train_losses, val_losses, save_path=os.path.join(save_dir, "loss_curve.png"))
+    plot_losses(train_losses_a, val_losses_a, save_path=os.path.join(save_dir, "loss_curve_a.png"))
+    plot_losses(train_losses_b, val_losses_b, save_path=os.path.join(save_dir, "loss_curve_b.png"))
 
     # 同时把 α/β 分开的 loss 也落盘（CSV），便于你做分析/画图
     loss_csv = os.path.join(save_dir, "loss_history.csv")
@@ -493,12 +493,12 @@ def train(
         "lr": np.array(lr_history, dtype=np.float64),
 
         "train_mse": np.array(train_losses, dtype=np.float64),
-        "test_mse":  np.array(test_losses, dtype=np.float64),
+        "val_mse":  np.array(val_losses, dtype=np.float64),
 
         "train_mse_alpha": np.array(train_losses_a, dtype=np.float64),
         "train_mse_beta":  np.array(train_losses_b, dtype=np.float64),
-        "test_mse_alpha":  np.array(test_losses_a, dtype=np.float64),
-        "test_mse_beta":   np.array(test_losses_b, dtype=np.float64),
+        "val_mse_alpha":  np.array(val_losses_a, dtype=np.float64),
+        "val_mse_beta":   np.array(val_losses_b, dtype=np.float64),
     })
     df_hist.to_csv(loss_csv, index=False)
 
@@ -507,29 +507,29 @@ def main():
     # =======================
     # 你在这里改参数就行
     # =======================
-    train_npz = r"./npz_out/20260210/train.npz"
-    test_npz  = r"./npz_out/20260210/test.npz"   # 你说目前先保持 test（后续再换 val/test）
+    train_npz = r"D:\Wang\07_ResNet1D\ResNet1D_weak_measurement\data\20260302\npzout\train.npz"
+    val_npz  = r"D:\Wang\07_ResNet1D\ResNet1D_weak_measurement\data\20260302\npzout\val.npz"   
 
     length = 89
     epochs = 50
     batch_size = 128
-    test_batch_size = 512
+    val_batch_size = 512
 
     lr = 1e-3
     weight_decay = 1e-2
     grad_clip = 1.0
 
     seed = 42
-    save_dir = r"./output/ckpt_resnet1d50_reg2_0302"
+    save_dir = r"./output/ckpt_resnet1d50_0302"
     norm_x = True
 
     train(
         train_npz=train_npz,
-        test_npz=test_npz,
+        val_npz=val_npz,
         length=length,
         epochs=epochs,
         batch_size=batch_size,
-        test_batch_size=test_batch_size,
+        val_batch_size=val_batch_size,
         lr=lr,
         weight_decay=weight_decay,
         grad_clip=grad_clip,

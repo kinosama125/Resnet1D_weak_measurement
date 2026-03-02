@@ -4,7 +4,7 @@ mat_to_npz_group_split.py
 -----------------------------------------------------------------------------
 用途
 - 将 MATLAB v7.3（HDF5）格式的仿真 .mat 数据转换为 NPZ（x, y, lambda_nm），并按“组”划分
-  train/test，避免数据泄露（同一组真实参数的重复测量不会同时出现在 train 与 test）。
+  train/val，避免数据泄露（同一组真实参数的重复测量不会同时出现在 train 与 val）。
 
 输入（MATLAB v7.3 .mat）
 - 期望字段（支持别名自动适配）：
@@ -19,14 +19,14 @@ mat_to_npz_group_split.py
 
 输出（NPZ；写入 out_dir）
 - full.npz : x [N, 1, L], y [N, 2], lambda_nm [L]
-- train.npz/test.npz : 按组划分的子集（均包含 x, y, lambda_nm）
+- train.npz/val.npz : 按组划分的子集（均包含 x, y, lambda_nm）
 - 其中 y 的列顺序固定为：[Delta_alpha, beta]
 
 主要接口
-- convert_mat_to_npz_group_split(mat_path, out_dir, test_ratio=0.2, seed=42, mode="all")
+- convert_mat_to_npz_group_split(mat_path, out_dir, val_ratio=0.2, seed=42, mode="all")
   - mat_path   : 输入 .mat 路径
   - out_dir    : 输出目录（自动创建）
-  - test_ratio : 测试组比例（按 group_ids 划分）
+  - val_ratio : 测试组比例（按 group_ids 划分）
   - seed       : 划分随机种子（可复现）
   - mode:
       * "all"  : 每组 repeats 次重复都作为独立样本（N = Ng*repeats，推荐训练）
@@ -39,7 +39,7 @@ mat_to_npz_group_split.py
   - y: float32，[N, 2]
 - 分组划分：
   - group_ids 记录每个样本所属参数组
-  - train/test 的 group_ids 必须完全不相交（内置泄露检查）
+  - train/val 的 group_ids 必须完全不相交（内置泄露检查）
 
 依赖
 - numpy
@@ -65,13 +65,13 @@ def _ensure_1d(a: np.ndarray) -> np.ndarray:
     return a.reshape(-1)
 
 
-def _save_npz_full_train_test(
+def _save_npz_full_train_val(
     x: np.ndarray,
     y: np.ndarray,
     lambda_nm: np.ndarray,
     group_ids: np.ndarray,
     out_dir: str,
-    test_ratio: float,
+    val_ratio: float,
     seed: int,
 ):
     os.makedirs(out_dir, exist_ok=True)
@@ -101,37 +101,37 @@ def _save_npz_full_train_test(
     print(f"[OK] Saved: {full_path}")
     print(f"     x: {x.shape} float32, y: {y.shape} float32, lambda_nm: {lambda_nm.shape} float32")
 
-    # ---- 按组划分 train/test（避免泄露）----
+    # ---- 按组划分 train/val（避免泄露）----
     rng = np.random.RandomState(seed)
     uniq_groups = np.unique(group_ids)
     rng.shuffle(uniq_groups)
 
-    n_test_groups = int(round(len(uniq_groups) * test_ratio))
-    n_test_groups = max(1, min(len(uniq_groups) - 1, n_test_groups))  # 至少 1 组测试，至少 1 组训练
+    n_val_groups = int(round(len(uniq_groups) * val_ratio))
+    n_val_groups = max(1, min(len(uniq_groups) - 1, n_val_groups))  # 至少 1 组测试，至少 1 组训练
 
-    test_groups = uniq_groups[:n_test_groups]
-    is_test = np.isin(group_ids, test_groups)
-    is_train = ~is_test
+    val_groups = uniq_groups[:n_val_groups]
+    is_val = np.isin(group_ids, val_groups)
+    is_train = ~is_val
 
     train_path = os.path.join(out_dir, "train.npz")
-    test_path = os.path.join(out_dir, "test.npz")
+    val_path = os.path.join(out_dir, "val.npz")
     np.savez_compressed(train_path, x=x[is_train], y=y[is_train], lambda_nm=lambda_nm)
-    np.savez_compressed(test_path,  x=x[is_test],  y=y[is_test],  lambda_nm=lambda_nm)
+    np.savez_compressed(val_path,  x=x[is_val],  y=y[is_val],  lambda_nm=lambda_nm)
 
-    # ---- 泄露检查：train/test 组必须不相交 ----
+    # ---- 泄露检查：train/val 组必须不相交 ----
     train_groups = set(np.unique(group_ids[is_train]).tolist())
-    test_groups_set = set(np.unique(group_ids[is_test]).tolist())
-    if not train_groups.isdisjoint(test_groups_set):
-        raise RuntimeError("Data leakage detected: some groups appear in both train and test!")
+    val_groups_set = set(np.unique(group_ids[is_val]).tolist())
+    if not train_groups.isdisjoint(val_groups_set):
+        raise RuntimeError("Data leakage detected: some groups appear in both train and val!")
 
     print(f"[OK] Saved: {train_path}  (samples={int(is_train.sum())}, groups={len(train_groups)})")
-    print(f"[OK] Saved: {test_path}   (samples={int(is_test.sum())}, groups={len(test_groups_set)})")
+    print(f"[OK] Saved: {val_path}   (samples={int(is_val.sum())}, groups={len(val_groups_set)})")
 
 
 def convert_mat_to_npz_group_split(
     mat_path: str,
     out_dir: str,
-    test_ratio: float = 0.2,
+    val_ratio: float = 0.2,
     seed: int = 42,
     mode: str = "all",
 ):
@@ -193,23 +193,23 @@ def convert_mat_to_npz_group_split(
     else:
         raise ValueError(f"Traw 维度不支持：{Traw.shape}（期望 2D 或 3D）")
 
-    _save_npz_full_train_test(
+    _save_npz_full_train_val(
         x=x,
         y=y,
         lambda_nm=lambda_nm,
         group_ids=group_ids,
         out_dir=out_dir,
-        test_ratio=test_ratio,
+        val_ratio=val_ratio,
         seed=seed,
     )
 
 
 def main():
     # ===================== 在这里改参数（不走命令行） =====================
-    mat_path = r"F:\DL\Code\07_ResNet1D\data_generate_matlab\20260210\Traw_3000x100_PSD_ModeA_fixedI0_withNoise.mat"
-    out_dir = r"F:\DL\Code\07_ResNet1D\npz_out\20260210"
+    mat_path = r"D:\Wang\07_ResNet1D\ResNet1D_weak_measurement\data\20260302\Traw_3000x100_PSD_ModeA_fixedI0_withNoise.mat"
+    out_dir = r"D:\Wang\07_ResNet1D\ResNet1D_weak_measurement\data\20260302\npzout"
 
-    test_ratio = 0.2
+    val_ratio = 0.3
     seed = 42
 
     # "all": 输出 N=Ng*repeats（例如 3000*100=300000）
@@ -219,7 +219,7 @@ def main():
     convert_mat_to_npz_group_split(
         mat_path=mat_path,
         out_dir=out_dir,
-        test_ratio=test_ratio,
+        val_ratio=val_ratio,
         seed=seed,
         mode=mode,
     )

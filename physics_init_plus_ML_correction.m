@@ -34,8 +34,8 @@
 % - DA_hat / b_hat: [Nmeas, Ng]（无解填 NaN）
 %
 % 下游衔接
-% - 该脚本用于“传统方法基线”对比；（注意在resnet_test_main_0209.py已经用python实现，此文件仅作为验证）
-% - Python 的 resnet_test_main_0209.py 也会调用对应的 Python 版 solve_physics_batch
+% - 该脚本用于“传统方法基线”对比；（注意在resnet_val_main_0209.py已经用python实现，此文件仅作为验证）
+% - Python 的 resnet_val_main_0209.py 也会调用对应的 Python 版 solve_physics_batch
 %   在同一 CSV 内对齐输出网络预测与传统预测。
 % -------------------------------------------------------------------------
 

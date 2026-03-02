@@ -1,5 +1,5 @@
 """
-resnet_test_main_0209.py
+resnet_val_main_0209.py
 -----------------------------------------------------------------------------
 用途
 - 加载训练阶段保存的 checkpoint（best.pt），在指定 NPZ 上做推理，导出与训练一致口径的 CSV；
@@ -9,7 +9,7 @@ resnet_test_main_0209.py
 
 输入
 - ckpt_path : 训练输出的 best.pt（必须包含 y_mean/y_std/length/norm_x 等）
-- test_npz  : 输入数据 NPZ
+- val_npz  : 输入数据 NPZ
   - 必须包含 x；可选包含 y（真实尺度）
   - 若启用传统方法：必须包含 lambda_nm；可选包含 I0（否则默认 0.01）
 - out_dir   : 输出目录
@@ -427,8 +427,8 @@ def main():
     set_seed(42)
 
     ckpt_path = r"./output/ckpt_resnet1d50_reg2_0205_1/best.pt"   # 改成你的 best.pt / epoch_xxx.pt
-    test_npz  = r"./npz_out/20260210/full.npz"                    # 改成你的 test/val/真实数据 npz（真实数据可无 y）,注意0210的full完全用作验证
-    out_dir   = r"./test_out/20260227/"                            # 输出目录
+    val_npz  = r"./npz_out/20260210/full.npz"                    # 改成你的 val/val/真实数据 npz（真实数据可无 y）,注意0210的full完全用作验证
+    out_dir   = r"./val_out/20260227/"                            # 输出目录
 
     # 读取 checkpoint
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -441,7 +441,7 @@ def main():
     y_scale = float(ckpt.get("y_scale", 1.0))
 
     # 读取数据
-    x, y_true_raw = load_npz_x_y(test_npz, length=length)
+    x, y_true_raw = load_npz_x_y(val_npz, length=length)
 
     # 传统方法需要用“原始 x”（不能用 min-max 后的 x），否则幅值关系被破坏
     x_raw_for_phy = x.clone()
@@ -472,9 +472,9 @@ def main():
     # ===============================
     # 传统方法（physics）反解：直接吃 x 和 lambda_nm
     # ===============================
-    with np.load(test_npz, allow_pickle=True) as _npz:
+    with np.load(val_npz, allow_pickle=True) as _npz:
         if "lambda_nm" not in _npz:
-            raise KeyError("test.npz 中找不到 'lambda_nm'，传统方法需要波长轴。")
+            raise KeyError("val.npz 中找不到 'lambda_nm'，传统方法需要波长轴。")
         lambda_nm = _npz["lambda_nm"]
         I0 = float(_npz["I0"]) if "I0" in _npz.files else 0.01  # 必须与你仿真一致
 
