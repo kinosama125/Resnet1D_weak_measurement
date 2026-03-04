@@ -52,12 +52,59 @@
 
 ## 快速开始
 
-### 1）MATLAB 生成 `.mat`
+### 1) MATLAB 生成 `.mat`
 在 MATLAB 中运行：
 - `generate_T_PSD_3000x100_modeA_fixedI0.m`  
 （确保脚本里的输出目录存在/可写）
 
-### 2）转换 `.mat → .npz`
+（可选）物理反解 baseline：
+- `physics_init_plus_ML_correction.m`
+
+---
+
+### 2) 转换 `.mat` → `.npz`
 在终端运行：
+
 ```powershell
 python mat_to_npz_group_split.py
+```
+
+运行完成后应看到类似输出：
+- `npz_out/YYYYMMDD/full.npz`
+- `npz_out/YYYYMMDD/train.npz`
+- `npz_out/YYYYMMDD/test.npz`
+
+---
+
+### 3) 训练
+在 `resnet_main_0130.py` 的 `main()` 里修改路径（示例）：
+
+```python
+train_npz = r"./npz_out/20260206/train.npz"
+test_npz  = r"./npz_out/20260206/test.npz"
+length    = 89
+save_dir  = r"./output/ckpt_resnet1d_xxx"
+```
+
+在终端运行：
+
+```powershell
+python resnet_main_0130.py
+```
+
+---
+
+### 4) 验证 / 推理
+在 `resnet_test_main_0209.py` 的 `main()` 里修改路径（示例）：
+
+```python
+ckpt_path = r"./output/ckpt_resnet1d_xxx/best.pt"
+test_npz  = r"./npz_out/20260206/test.npz"
+out_dir   = r"./test_out/20260206/"
+```
+
+在终端运行：
+
+```powershell
+python resnet_test_main_0209.py
+```
